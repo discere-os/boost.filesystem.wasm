@@ -1,3 +1,13 @@
+# @discere-os/boost.filesystem.wasm
+
+WebAssembly port of Boost.Filesystem - Cross-platform filesystem manipulation library with path operations, directory iteration, and file system queries.
+
+[![CI/CD](https://github.com/discere-os/discere-nucleus/actions/workflows/boost-filesystem-wasm-ci.yml/badge.svg)](https://github.com/discere-os/discere-nucleus/actions)
+[![JSR](https://jsr.io/badges/@discere-os/boost.filesystem.wasm)](https://jsr.io/@discere-os/boost.filesystem.wasm)
+[![npm version](https://badge.fury.io/js/@discere-os%2Fboost.filesystem.wasm.svg)](https://badge.fury.io/js/@discere-os%2Fboost.filesystem.wasm)
+[![License](https://img.shields.io/badge/License-BSL--1.0-blue.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-alpha-orange.svg)](https://github.com/discere-os/discere-nucleus)
+
 # Boost.Filesystem
 
 Boost.Filesystem, part of collection of the [Boost C++ Libraries](https://github.com/boostorg), provides facilities to manipulate files and directories, and the paths that identify them.
@@ -26,3 +36,21 @@ Branch          | GitHub Actions | AppVeyor | Test Matrix | Dependencies |
 ### License
 
 Distributed under the [Boost Software License, Version 1.0](https://www.boost.org/LICENSE_1_0.txt).
+
+
+## 💖 Support This Work
+
+This WebAssembly port is part of a larger effort to bring professional desktop applications to browsers with native performance.
+
+**👨‍💻 About the Maintainer**: [Isaac Johnston (@superstructor)](https://github.com/superstructor) - Building foundational browser-native computing infrastructure through systematic C/C++ to WebAssembly porting.
+
+**📊 Impact**: 70+ open source WASM libraries enabling professional applications like Blender, GIMP, and scientific computing tools to run natively in browsers.
+
+**🚀 Your Support Enables**:
+- Continued maintenance and updates
+- Performance optimizations
+- New library ports and integrations
+- Documentation and tutorials
+- Cross-browser compatibility testing
+
+**[💖 Sponsor this work](https://github.com/sponsors/superstructor)** to help build the future of browser-native computing.
