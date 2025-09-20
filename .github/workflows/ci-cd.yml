@@ -1,0 +1,309 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  EMSCRIPTEN_VERSION: '3.1.67'
+  DENO_VERSION: 'v2.1.0'
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        deno-version: ['v2.1.0', 'v2.0.0']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Deno ${{ matrix.deno-version }}
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ matrix.deno-version }}
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSCRIPTEN_VERSION }}
+
+      - name: Build boost.system.wasm dependency
+        run: |
+          cd ../boost.system.wasm
+          if [ ! -f "install/wasm/boost-system-side.wasm" ]; then
+            ./build-dual.sh all
+          fi
+          cd -
+
+      - name: Build dual WASM modules
+        run: |
+          chmod +x build-dual.sh
+          ./build-dual.sh all
+
+      - name: Verify build outputs
+        run: |
+          ls -la install/wasm/
+          test -f install/wasm/boost-filesystem-side.wasm
+          test -f install/wasm/boost-filesystem-main.js
+          test -f install/wasm/boost-filesystem-main.wasm
+
+      - name: Check TypeScript types
+        run: deno check src/lib/index.ts
+
+      - name: Run linting
+        run: deno lint src/ tests/ demo-deno.ts bench/
+
+      - name: Run formatting check
+        run: deno fmt --check src/ tests/ demo-deno.ts bench/
+
+      - name: Run test suite
+        run: deno test --allow-read --allow-write tests/deno/
+
+      - name: Run benchmarks
+        run: deno bench --allow-read bench/
+
+      - name: Run demo
+        run: deno run --allow-read --allow-write demo-deno.ts
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Security audit (Deno)
+        run: deno task check:all
+
+      # Note: Add additional security scanning tools as needed
+
+  build:
+    name: Build Distribution
+    runs-on: ubuntu-latest
+    needs: [test, security]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSCRIPTEN_VERSION }}
+
+      - name: Build boost.system.wasm dependency
+        run: |
+          cd ../boost.system.wasm
+          if [ ! -f "install/wasm/boost-system-side.wasm" ]; then
+            ./build-dual.sh all
+          fi
+          cd -
+
+      - name: Build WASM modules
+        run: |
+          chmod +x build-dual.sh
+          ./build-dual.sh all
+
+      - name: Generate build summary
+        run: |
+          echo "## 📦 Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Module | Size | Compressed |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|------|------------|" >> $GITHUB_STEP_SUMMARY
+
+          for file in install/wasm/*; do
+            if [[ -f "$file" ]]; then
+              SIZE=$(stat -c%s "$file")
+              COMPRESSED=$(gzip -c "$file" | wc -c)
+              echo "| $(basename $file) | $(numfmt --to=iec $SIZE) | $(numfmt --to=iec $COMPRESSED) |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Performance Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "- **SIDE_MODULE Size**: $(stat -c%s install/wasm/boost-filesystem-side.wasm | numfmt --to=iec)" >> $GITHUB_STEP_SUMMARY
+          echo "- **MAIN_MODULE Size**: $(stat -c%s install/wasm/boost-filesystem-main.wasm | numfmt --to=iec)" >> $GITHUB_STEP_SUMMARY
+
+      - name: Build NPM package
+        run: deno task build:npm
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: |
+            install/wasm/
+            npm/
+          retention-days: 30
+
+  deploy-cloudflare-release:
+    name: Deploy Release to Cloudflare R2
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: ./
+
+      - name: Set release version
+        id: release-version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Deploy versioned to R2
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: |
+            r2 object put discere-os-wasm-production/boost.filesystem/${{ steps.release-version.outputs.VERSION }}/side/boost-filesystem-side.wasm --file=install/wasm/boost-filesystem-side.wasm
+            r2 object put discere-os-wasm-production/boost.filesystem/${{ steps.release-version.outputs.VERSION }}/main/boost-filesystem-main.js --file=install/wasm/boost-filesystem-main.js
+            r2 object put discere-os-wasm-production/boost.filesystem/${{ steps.release-version.outputs.VERSION }}/main/boost-filesystem-main.wasm --file=install/wasm/boost-filesystem-main.wasm
+
+      - name: Update latest in R2
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: |
+            r2 object put discere-os-wasm-production/boost.filesystem/latest/side/boost-filesystem-side.wasm --file=install/wasm/boost-filesystem-side.wasm
+            r2 object put discere-os-wasm-production/boost.filesystem/latest/main/boost-filesystem-main.js --file=install/wasm/boost-filesystem-main.js
+            r2 object put discere-os-wasm-production/boost.filesystem/latest/main/boost-filesystem-main.wasm --file=install/wasm/boost-filesystem-main.wasm
+
+      - name: Verify deployment
+        run: |
+          sleep 15
+          curl -f "https://wasm.discere.cloud/boost.filesystem/${{ steps.release-version.outputs.VERSION }}/main/boost-filesystem-main.js" -I
+
+  deploy-cloudflare-snapshot:
+    name: Deploy Snapshot to Cloudflare R2
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: ./
+
+      - name: Set snapshot version
+        id: version
+        run: echo "VERSION=sha-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Deploy snapshot to R2
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: |
+            r2 object put discere-os-wasm-production/boost.filesystem/${{ steps.version.outputs.VERSION }}/side/boost-filesystem-side.wasm --file=install/wasm/boost-filesystem-side.wasm
+            r2 object put discere-os-wasm-production/boost.filesystem/${{ steps.version.outputs.VERSION }}/main/boost-filesystem-main.js --file=install/wasm/boost-filesystem-main.js
+            r2 object put discere-os-wasm-production/boost.filesystem/${{ steps.version.outputs.VERSION }}/main/boost-filesystem-main.wasm --file=install/wasm/boost-filesystem-main.wasm
+
+  publish-npm:
+    name: Publish to NPM
+    runs-on: ubuntu-latest
+    needs: [deploy-cloudflare-release]
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: ./
+
+      - name: Setup Node.js for NPM
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish to NPM
+        run: |
+          cd npm
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-jsr:
+    name: Publish to JSR
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: ./
+
+      - name: Publish to JSR
+        run: deno publish
+        env:
+          JSR_TOKEN: ${{ secrets.JSR_TOKEN }}
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [publish-npm, publish-jsr]
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-artifacts
+          path: ./build-artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build-artifacts/install/wasm/*.wasm
+            build-artifacts/install/wasm/*.js
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
